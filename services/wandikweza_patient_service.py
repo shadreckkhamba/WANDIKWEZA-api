@@ -294,8 +294,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
             monthly_total_query = """
                 SELECT COUNT(*) AS total_month_visits
                 FROM order_entries o
-                WHERE o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                  AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH);
+                WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                  AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH);
             """
             cur.execute(monthly_total_query)
             monthly_total_row = cur.fetchone() or {}
@@ -310,8 +310,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
                     FROM order_entries o
                     LEFT JOIN person per ON o.patient_id = per.person_id AND per.voided = 0
                     WHERE o.order_date > %s
-                      AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                      AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
+                      AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                      AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
                 """
                 cur.execute(query, (last_sent_timestamp,))
@@ -323,8 +323,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         o.order_date AS time_stamp
                     FROM order_entries o
                     LEFT JOIN person per ON o.patient_id = per.person_id AND per.voided = 0
-                    WHERE o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                      AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
+                    WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                      AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
                 """
                 cur.execute(query)
