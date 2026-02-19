@@ -160,25 +160,113 @@ def get_max_timestamp_from_records(records, timestamp_field='time_stamp'):
     return max_timestamp
 
 local_tz = pytz.timezone('Africa/Blantyre')
-# --- data query function ---
-def get_patient_categories(last_sent_timestamp=None):
-    """Get patient categories with incremental support"""
+
+FULL_MONTH_REFETCH_ENABLED = os.getenv("FULL_MONTH_REFETCH_ENABLED", "false").lower() == "true"
+FULL_MONTH_REFETCH_START = os.getenv("FULL_MONTH_REFETCH_START")
+FULL_MONTH_REFETCH_END = os.getenv("FULL_MONTH_REFETCH_END")
+FULL_MONTH_REFETCH_DONE_FILE = os.getenv("FULL_MONTH_REFETCH_DONE_FILE", "full_month_refetch.done")
+WANDIKWEZA_DRY_RUN = os.getenv("WANDIKWEZA_DRY_RUN", "false").lower() == "true"
+
+def get_current_month_window():
+    now = datetime.now()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if month_start.month == 12:
+        month_end = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        month_end = month_start.replace(month=month_start.month + 1)
+    return month_start, month_end
+
+def get_full_month_refetch_window():
+    if not FULL_MONTH_REFETCH_ENABLED:
+        return None
+
+    if os.path.exists(FULL_MONTH_REFETCH_DONE_FILE):
+        return None
+
+    if not FULL_MONTH_REFETCH_START or not FULL_MONTH_REFETCH_END:
+        logger.warning(
+            "FULL_MONTH_REFETCH_ENABLED=true but FULL_MONTH_REFETCH_START/FULL_MONTH_REFETCH_END are missing. "
+            "Skipping forced full-month refetch."
+        )
+        return None
+
     try:
-        with get_fresh_connection().cursor() as cur:
-            if last_sent_timestamp:
-                # Incremental query - only get records after last sent timestamp
+        start = datetime.fromisoformat(FULL_MONTH_REFETCH_START)
+        end = datetime.fromisoformat(FULL_MONTH_REFETCH_END)
+    except ValueError:
+        logger.error(
+            "Invalid FULL_MONTH_REFETCH_START/FULL_MONTH_REFETCH_END values. "
+            "Use ISO format like 2026-02-01 00:00:00 and 2026-03-01 00:00:00."
+        )
+        return None
+
+    if start >= end:
+        logger.error("Invalid full-month refetch window: start must be before end.")
+        return None
+
+    return start, end
+
+def mark_full_month_refetch_done(start, end):
+    try:
+        with open(FULL_MONTH_REFETCH_DONE_FILE, "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "window_start": start.strftime("%Y-%m-%d %H:%M:%S"),
+                        "window_end": end.strftime("%Y-%m-%d %H:%M:%S"),
+                        "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                    indent=2,
+                )
+            )
+        logger.info(
+            "Marked full-month refetch as completed for window [%s, %s).",
+            start.strftime("%Y-%m-%d %H:%M:%S"),
+            end.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as e:
+        logger.error(f"Failed to mark full-month refetch as completed: {e}")
+
+def get_order_entries_counts(window_start, window_end):
+    """Return total visits and distinct patients for a time window."""
+    try:
+        with get_fresh_connection().cursor(DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_rows,
+                    COUNT(DISTINCT o.patient_id) AS unique_patients
+                FROM order_entries o
+                WHERE o.order_date >= %s
+                  AND o.order_date < %s
+                """,
+                (window_start, window_end),
+            )
+            row = cur.fetchone() or {}
+            return row.get("total_rows", 0), row.get("unique_patients", 0)
+    except Exception:
+        logger.error("Error in get_order_entries_counts:\n" + traceback.format_exc())
+        return 0, 0
+# --- data query function ---
+def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
+    """Get patient categories with incremental support or a forced full-window fetch."""
+    try:
+        with get_fresh_connection().cursor(DictCursor) as cur:
+            if full_refetch_window:
+                window_start, window_end = full_refetch_window
                 query = """
                     WITH detailed_data AS (
                         SELECT
                             'Under 5' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created > %s
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
+                          AND o.order_date >= %s
+                          AND o.order_date < %s
 
                         UNION ALL
 
@@ -190,9 +278,10 @@ def get_patient_categories(last_sent_timestamp=None):
                         JOIN patient p ON o.patient_id = p.patient_id
                         JOIN services s ON o.service_id = s.service_id
                         WHERE o.voided = 0
-                        AND p.voided = 0
-                        AND s.name = 'Female antenatal'
-                        AND o.order_date > %s
+                          AND p.voided = 0
+                          AND s.name = 'Female antenatal'
+                          AND o.order_date >= %s
+                          AND o.order_date < %s
 
                         UNION ALL
 
@@ -203,9 +292,75 @@ def get_patient_categories(last_sent_timestamp=None):
                         FROM order_entries o
                         JOIN person per ON o.patient_id = per.person_id
                         WHERE o.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
-                        AND o.order_date > %s
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
+                          AND o.order_date >= %s
+                          AND o.order_date < %s
+                    ),
+                    totals AS (
+                        SELECT category, COUNT(DISTINCT patient_id) AS total
+                        FROM detailed_data
+                        GROUP BY category
+                    )
+                    SELECT d.category, d.patient_id, d.time_stamp, t.total
+                    FROM detailed_data d
+                    JOIN totals t ON d.category = t.category
+                    ORDER BY d.category, d.time_stamp;
+                """
+                cur.execute(
+                    query,
+                    (
+                        window_start, window_end,
+                        window_start, window_end,
+                        window_start, window_end,
+                    ),
+                )
+            elif last_sent_timestamp:
+                query = """
+                    WITH detailed_data AS (
+                        SELECT
+                            'Under 5' AS category,
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
+                          AND o.order_date > %s
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+
+                        UNION ALL
+
+                        SELECT
+                            'Pregnant Women' AS category,
+                            p.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN patient p ON o.patient_id = p.patient_id
+                        JOIN services s ON o.service_id = s.service_id
+                        WHERE o.voided = 0
+                          AND p.voided = 0
+                          AND s.name = 'Female antenatal'
+                          AND o.order_date > %s
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+
+                        UNION ALL
+
+                        SELECT
+                            'Adolescents' AS category,
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
+                          AND o.order_date > %s
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -219,20 +374,19 @@ def get_patient_categories(last_sent_timestamp=None):
                 """
                 cur.execute(query, (last_sent_timestamp, last_sent_timestamp, last_sent_timestamp))
             else:
-                # Full query - get all records from current month
                 query = """
                     WITH detailed_data AS (
                         SELECT
                             'Under 5' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -244,10 +398,10 @@ def get_patient_categories(last_sent_timestamp=None):
                         JOIN patient p ON o.patient_id = p.patient_id
                         JOIN services s ON o.service_id = s.service_id
                         WHERE o.voided = 0
-                        AND p.voided = 0
-                        AND s.name = 'Female antenatal'
-                        AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND p.voided = 0
+                          AND s.name = 'Female antenatal'
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -258,10 +412,10 @@ def get_patient_categories(last_sent_timestamp=None):
                         FROM order_entries o
                         JOIN person per ON o.patient_id = per.person_id
                         WHERE o.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
-                        AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
+                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -274,16 +428,21 @@ def get_patient_categories(last_sent_timestamp=None):
                     ORDER BY d.category, d.time_stamp;
                 """
                 cur.execute(query)
-            
+
             rows = cur.fetchall()
-            # logger.info(f"Fetched {len(rows)} age category records (incremental: {last_sent_timestamp is not None})")
+            logger.info(
+                "Age categories fetched this cycle=%s | last_sent_timestamp=%s | full_refetch_window=%s",
+                len(rows),
+                last_sent_timestamp,
+                full_refetch_window,
+            )
             return rows
 
     except Exception:
         logger.error("Error in get_patient_categories:\n" + traceback.format_exc())
         return None
 
-def get_patients_by_gender(last_sent_timestamp=None):
+def get_patients_by_gender(last_sent_timestamp=None, full_refetch_window=None):
     """
     Get patients by gender based on VISITS (order_entries),
     restricted to current month, with incremental support.
@@ -291,17 +450,33 @@ def get_patients_by_gender(last_sent_timestamp=None):
     conn = get_fresh_connection()
     try:
         with conn.cursor(DictCursor) as cur:
-            monthly_total_query = """
-                SELECT COUNT(*) AS total_month_visits
-                FROM order_entries o
-                WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
-                  AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH);
-            """
-            cur.execute(monthly_total_query)
-            monthly_total_row = cur.fetchone() or {}
-            monthly_total_visits = monthly_total_row.get('total_month_visits', 0)
+            if full_refetch_window:
+                window_start, window_end = full_refetch_window
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_window_visits
+                    FROM order_entries o
+                    WHERE o.order_date >= %s
+                      AND o.order_date < %s
+                    """,
+                    (window_start, window_end),
+                )
+                window_total_row = cur.fetchone() or {}
+                window_total_visits = window_total_row.get("total_window_visits", 0)
 
-            if last_sent_timestamp:
+                query = """
+                    SELECT
+                        o.patient_id,
+                        COALESCE(LOWER(per.gender), 'unknown') AS gender,
+                        o.order_date AS time_stamp
+                    FROM order_entries o
+                    LEFT JOIN person per ON o.patient_id = per.person_id AND per.voided = 0
+                    WHERE o.order_date >= %s
+                      AND o.order_date < %s
+                    ORDER BY o.order_date;
+                """
+                cur.execute(query, (window_start, window_end))
+            elif last_sent_timestamp:
                 query = """
                     SELECT
                         o.patient_id,
@@ -330,14 +505,31 @@ def get_patients_by_gender(last_sent_timestamp=None):
                 cur.execute(query)
 
             rows = cur.fetchall()
-            logger.info(
-                "Gender monthly fetched total=%s | fetched this cycle=%s | last_sent_timestamp=%s",
-                monthly_total_visits,
-                len(rows),
-                last_sent_timestamp
-            )
-
-            print("FETCHED ROWS:", len(rows)) 
+            if full_refetch_window:
+                logger.info(
+                    "Gender full-window fetched total=%s | fetched this cycle=%s | window_start=%s | window_end=%s",
+                    window_total_visits,
+                    len(rows),
+                    full_refetch_window[0],
+                    full_refetch_window[1],
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_month_visits
+                    FROM order_entries o
+                    WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                      AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                    """
+                )
+                monthly_total_row = cur.fetchone() or {}
+                monthly_total_visits = monthly_total_row.get('total_month_visits', 0)
+                logger.info(
+                    "Gender monthly fetched total=%s | fetched this cycle=%s | last_sent_timestamp=%s",
+                    monthly_total_visits,
+                    len(rows),
+                    last_sent_timestamp
+                )
 
             # Calculate gender totals (visit-based)
             gender_totals = {}
@@ -416,38 +608,89 @@ def get_refunded_patients(last_sent_timestamp=None):
         logger.error("Error in get_refunded_patients:\n" + traceback.format_exc())
         return None
 
-def get_patients_by_location(last_sent_timestamp=None):
-    """Get patients by location - based on VISITS (order_entries)"""
+def get_patients_by_location(last_sent_timestamp=None, full_refetch_window=None):
+    """Get patients by location based on visits, with incremental or forced full-window mode."""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
-
-            query = """
-                WITH total_patients AS (
-                    SELECT COUNT(DISTINCT o.patient_id) AS total
+            if full_refetch_window:
+                window_start, window_end = full_refetch_window
+                query = """
+                    WITH total_patients AS (
+                        SELECT COUNT(DISTINCT o.patient_id) AS total
+                        FROM order_entries o
+                        WHERE o.order_date >= %s
+                          AND o.order_date < %s
+                    )
+                    SELECT
+                        o.patient_id,
+                        MIN(o.order_date) AS first_visit_time,
+                        COUNT(*) AS visit_count,
+                        tp.total AS total_patients_this_month,
+                        COALESCE(pa.city_village, 'Unknown') AS location
                     FROM order_entries o
-                    LEFT JOIN person_address pa2 
-                           ON pa2.person_id = o.patient_id AND pa2.voided = 0
-                    WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                )
-                SELECT
-                    o.patient_id,
-                    MIN(o.order_date) AS first_visit_time,
-                    COUNT(*) AS visit_count,
-                    tp.total AS total_patients_this_month,
-                    COALESCE(pa.city_village, 'Unknown') AS location
-                FROM order_entries o
-                LEFT JOIN person_address pa 
-                       ON pa.person_id = o.patient_id AND pa.voided = 0
-                CROSS JOIN total_patients tp
-                WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                  AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                GROUP BY o.patient_id, pa.city_village
-                ORDER BY first_visit_time;
-            """
+                    LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
+                    CROSS JOIN total_patients tp
+                    WHERE o.order_date >= %s
+                      AND o.order_date < %s
+                    GROUP BY o.patient_id, pa.city_village
+                    ORDER BY first_visit_time;
+                """
+                cur.execute(query, (window_start, window_end, window_start, window_end))
+            elif last_sent_timestamp:
+                query = """
+                    WITH total_patients AS (
+                        SELECT COUNT(DISTINCT o.patient_id) AS total
+                        FROM order_entries o
+                        WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                    )
+                    SELECT
+                        o.patient_id,
+                        MIN(o.order_date) AS first_visit_time,
+                        COUNT(*) AS visit_count,
+                        tp.total AS total_patients_this_month,
+                        COALESCE(pa.city_village, 'Unknown') AS location
+                    FROM order_entries o
+                    LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
+                    CROSS JOIN total_patients tp
+                    WHERE o.order_date > %s
+                      AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                      AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                    GROUP BY o.patient_id, pa.city_village
+                    ORDER BY first_visit_time;
+                """
+                cur.execute(query, (last_sent_timestamp,))
+            else:
+                query = """
+                    WITH total_patients AS (
+                        SELECT COUNT(DISTINCT o.patient_id) AS total
+                        FROM order_entries o
+                        WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                    )
+                    SELECT
+                        o.patient_id,
+                        MIN(o.order_date) AS first_visit_time,
+                        COUNT(*) AS visit_count,
+                        tp.total AS total_patients_this_month,
+                        COALESCE(pa.city_village, 'Unknown') AS location
+                    FROM order_entries o
+                    LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
+                    CROSS JOIN total_patients tp
+                    WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                      AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                    GROUP BY o.patient_id, pa.city_village
+                    ORDER BY first_visit_time;
+                """
+                cur.execute(query)
 
-            cur.execute(query)
             rows = cur.fetchall()
+            logger.info(
+                "Location fetched this cycle=%s | last_sent_timestamp=%s | full_refetch_window=%s",
+                len(rows),
+                last_sent_timestamp,
+                full_refetch_window,
+            )
             return rows
 
     except Exception:
@@ -535,12 +778,31 @@ def compose_payload():
     refund_last_sent = get_last_sent_timestamp('refunded_patients')
     registered_last_sent = get_last_sent_timestamp('registered_patients')
 
-    # Fetch only new data based on last sent timestamps
-    age_categories = get_patient_categories(age_last_sent) or []
-    gender_counts = get_patients_by_gender(gender_last_sent) or []
-    location_counts = get_patients_by_location(location_last_sent) or []
+    full_refetch_window = get_full_month_refetch_window()
+
+    # Fetch records with either incremental mode or forced full-window backfill mode.
+    age_categories = get_patient_categories(age_last_sent, full_refetch_window=full_refetch_window) or []
+    gender_counts = get_patients_by_gender(gender_last_sent, full_refetch_window=full_refetch_window) or []
+    location_counts = get_patients_by_location(location_last_sent, full_refetch_window=full_refetch_window) or []
     refunded_patients = get_refunded_patients(refund_last_sent) or []
     registered_patients = get_registered_patients(registered_last_sent) or []
+
+    if full_refetch_window:
+        verify_start, verify_end = full_refetch_window
+    else:
+        verify_start, verify_end = get_current_month_window()
+
+    total_rows, unique_patients = get_order_entries_counts(verify_start, verify_end)
+    logger.info(
+        "Verification before push | window_start=%s | window_end=%s | order_entries_total_rows=%s | "
+        "order_entries_unique_patients=%s | gender_rows_fetched=%s | location_rows_fetched=%s",
+        verify_start.strftime("%Y-%m-%d %H:%M:%S"),
+        verify_end.strftime("%Y-%m-%d %H:%M:%S"),
+        total_rows,
+        unique_patients,
+        len(gender_counts),
+        len(location_counts),
+    )
     
     age_list = [
         {
@@ -626,7 +888,10 @@ def compose_payload():
             'location_counts': {'records': location_counts, 'count': len(location_list)},
             'refunded_patients': {'records': refunded_patients, 'count': len(refund_list)},
             'registered_patients': {'records': registered_patients, 'count': len(registered_list)}
-        }
+        },
+        'control': {
+            'full_refetch_window': full_refetch_window
+        },
     }
 
 
@@ -671,6 +936,8 @@ def push_payload_to_virtual_server():
             payload_data = compose_payload()
             payload = payload_data['payload']
             metadata = payload_data['metadata']
+            control = payload_data.get('control', {})
+            full_refetch_window = control.get('full_refetch_window')
             
             # Check if there's any new data to send
             total_new_records = sum(meta['count'] for meta in metadata.values())
@@ -700,6 +967,15 @@ def push_payload_to_virtual_server():
                 "Content-Encoding": "gzip"
             }
 
+            if WANDIKWEZA_DRY_RUN:
+                logger.info(
+                    "DRY RUN enabled. Skipping POST | records=%s | full_refetch_window=%s",
+                    total_new_records,
+                    full_refetch_window,
+                )
+                time.sleep(120)
+                continue
+
             # Send the payload
             response = requests.post(url, data=compressed_bytes, headers=headers, timeout=120)
             response.raise_for_status()
@@ -723,6 +999,9 @@ def push_payload_to_virtual_server():
                         success_count += 1
                     else:
                         logger.warning(f"Failed to update timestamp for {data_type} - max_timestamp: {max_timestamp}")
+
+            if full_refetch_window:
+                mark_full_month_refetch_done(full_refetch_window[0], full_refetch_window[1])
 
             logger.info(
                 f"Successfully pushed {total_new_records} new records | "
