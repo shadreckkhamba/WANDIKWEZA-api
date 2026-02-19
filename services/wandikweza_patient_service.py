@@ -299,10 +299,9 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         o.order_date AS time_stamp
                     FROM order_entries o
                     JOIN patient p ON o.patient_id = p.patient_id
-                    JOIN person per ON p.patient_id = per.person_id
+                    LEFT JOIN person per ON p.patient_id = per.person_id AND per.voided = 0
                     WHERE o.voided = 0
                       AND p.voided = 0
-                      AND per.voided = 0
                       AND o.order_date > %s
                       AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
                       AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
@@ -317,10 +316,9 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         o.order_date AS time_stamp
                     FROM order_entries o
                     JOIN patient p ON o.patient_id = p.patient_id
-                    JOIN person per ON p.patient_id = per.person_id
+                    LEFT JOIN person per ON p.patient_id = per.person_id AND per.voided = 0
                     WHERE o.voided = 0
                       AND p.voided = 0
-                      AND per.voided = 0
                       AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
                       AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
@@ -610,6 +608,24 @@ def compose_payload():
         "refunded_patients": refund_list,
         "registered_patients": registered_list
     }
+
+    total_payload_records = (
+        len(age_list) +
+        len(gender_list) +
+        len(location_list) +
+        len(refund_list) +
+        len(registered_list)
+    )
+    logger.info(
+        "Payload records included | total=%s | age_categories=%s | gender_counts=%s | "
+        "location_counts=%s | refunded_patients=%s | registered_patients=%s",
+        total_payload_records,
+        len(age_list),
+        len(gender_list),
+        len(location_list),
+        len(refund_list),
+        len(registered_list),
+    )
     
     # Return payload along with metadata for state tracking
     return {
