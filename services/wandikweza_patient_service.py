@@ -337,6 +337,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
                 last_sent_timestamp
             )
 
+            print("FETCHED ROWS:", len(rows)) 
+
             # Calculate gender totals (visit-based)
             gender_totals = {}
             for row in rows:
