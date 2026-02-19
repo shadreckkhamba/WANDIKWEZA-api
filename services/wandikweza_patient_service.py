@@ -291,6 +291,16 @@ def get_patients_by_gender(last_sent_timestamp=None):
     conn = get_fresh_connection()
     try:
         with conn.cursor(DictCursor) as cur:
+            monthly_total_query = """
+                SELECT COUNT(*) AS total_month_visits
+                FROM order_entries o
+                WHERE o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                  AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH);
+            """
+            cur.execute(monthly_total_query)
+            monthly_total_row = cur.fetchone() or {}
+            monthly_total_visits = monthly_total_row.get('total_month_visits', 0)
+
             if last_sent_timestamp:
                 query = """
                     SELECT
@@ -298,11 +308,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         COALESCE(LOWER(per.gender), 'unknown') AS gender,
                         o.order_date AS time_stamp
                     FROM order_entries o
-                    JOIN patient p ON o.patient_id = p.patient_id
-                    LEFT JOIN person per ON p.patient_id = per.person_id AND per.voided = 0
-                    WHERE o.voided = 0
-                      AND p.voided = 0
-                      AND o.order_date > %s
+                    LEFT JOIN person per ON o.patient_id = per.person_id AND per.voided = 0
+                    WHERE o.order_date > %s
                       AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
                       AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
@@ -315,17 +322,20 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         COALESCE(LOWER(per.gender), 'unknown') AS gender,
                         o.order_date AS time_stamp
                     FROM order_entries o
-                    JOIN patient p ON o.patient_id = p.patient_id
-                    LEFT JOIN person per ON p.patient_id = per.person_id AND per.voided = 0
-                    WHERE o.voided = 0
-                      AND p.voided = 0
-                      AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                    LEFT JOIN person per ON o.patient_id = per.person_id AND per.voided = 0
+                    WHERE o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
                       AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
                 """
                 cur.execute(query)
 
             rows = cur.fetchall()
+            logger.info(
+                "Gender monthly fetched total=%s | fetched this cycle=%s | last_sent_timestamp=%s",
+                monthly_total_visits,
+                len(rows),
+                last_sent_timestamp
+            )
 
             # Calculate gender totals (visit-based)
             gender_totals = {}
