@@ -256,20 +256,20 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                 window_start, window_end = full_refetch_window
                 query = """
                     WITH detailed_data AS (
+                        -- Under 5: all registrations in window
                         SELECT
                             'Under 5' AS category,
-                            o.patient_id AS patient_id,
-                            o.order_date AS time_stamp
-                        FROM order_entries o
-                        JOIN person per ON o.patient_id = per.person_id
-                        WHERE o.voided = 0
-                          AND per.voided = 0
-                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
-                          AND o.order_date >= %s
-                          AND o.order_date < %s
+                            per.person_id AS patient_id,
+                            NULL AS time_stamp
+                        FROM person per
+                        WHERE per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
+                          AND per.date_created >= %s
+                          AND per.date_created < %s
 
                         UNION ALL
 
+                        -- Pregnant Women: only visits
                         SELECT
                             'Pregnant Women' AS category,
                             p.patient_id AS patient_id,
@@ -285,6 +285,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
 
                         UNION ALL
 
+                        -- Adolescents: only visits
                         SELECT
                             'Adolescents' AS category,
                             o.patient_id AS patient_id,
@@ -310,26 +311,24 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                 cur.execute(
                     query,
                     (
-                        window_start, window_end,
-                        window_start, window_end,
-                        window_start, window_end,
+                        window_start, window_end,  # Under 5
+                        window_start, window_end,  # Pregnant Women
+                        window_start, window_end   # Adolescents
                     ),
                 )
             elif last_sent_timestamp:
+                # Under 5 registrations in current month
                 query = """
                     WITH detailed_data AS (
                         SELECT
                             'Under 5' AS category,
-                            o.patient_id AS patient_id,
-                            o.order_date AS time_stamp
-                        FROM order_entries o
-                        JOIN person per ON o.patient_id = per.person_id
-                        WHERE o.voided = 0
-                          AND per.voided = 0
-                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
-                          AND o.order_date > %s
-                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
-                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                            per.person_id AS patient_id,
+                            NULL AS time_stamp
+                        FROM person per
+                        WHERE per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
+                          AND per.date_created >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND per.date_created < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -372,21 +371,20 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                     JOIN totals t ON d.category = t.category
                     ORDER BY d.category, d.time_stamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
             else:
+                # Default: current month
                 query = """
                     WITH detailed_data AS (
                         SELECT
                             'Under 5' AS category,
-                            o.patient_id AS patient_id,
-                            o.order_date AS time_stamp
-                        FROM order_entries o
-                        JOIN person per ON o.patient_id = per.person_id
-                        WHERE o.voided = 0
-                          AND per.voided = 0
-                          AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) < 5
-                          AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
-                          AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
+                            per.person_id AS patient_id,
+                            NULL AS time_stamp
+                        FROM person per
+                        WHERE per.voided = 0
+                          AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
+                          AND per.date_created >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
+                          AND per.date_created < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -441,7 +439,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
     except Exception:
         logger.error("Error in get_patient_categories:\n" + traceback.format_exc())
         return None
-
+    
 def get_patients_by_gender(last_sent_timestamp=None, full_refetch_window=None):
     """
     Get patients by gender based on VISITS (order_entries),
@@ -630,13 +628,13 @@ def get_patients_by_location(last_sent_timestamp=None, full_refetch_window=None)
                         MIN(o.order_date) AS first_visit_time,
                         COUNT(*) AS visit_count,
                         tp.total AS total_patients_this_month,
-                        COALESCE(pa.city_village, 'Unknown') AS location
+                        COALESCE(MAX(pa.city_village), 'Unknown') AS location
                     FROM order_entries o
                     LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
                     CROSS JOIN total_patients tp
                     WHERE o.order_date >= %s
                       AND o.order_date < %s
-                    GROUP BY o.patient_id, pa.city_village
+                    GROUP BY o.patient_id
                     ORDER BY first_visit_time;
                 """
                 cur.execute(query, (window_start, window_end, window_start, window_end))
@@ -653,14 +651,14 @@ def get_patients_by_location(last_sent_timestamp=None, full_refetch_window=None)
                         MIN(o.order_date) AS first_visit_time,
                         COUNT(*) AS visit_count,
                         tp.total AS total_patients_this_month,
-                        COALESCE(pa.city_village, 'Unknown') AS location
+                        COALESCE(MAX(pa.city_village), 'Unknown') AS location
                     FROM order_entries o
                     LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
                     CROSS JOIN total_patients tp
                     WHERE o.order_date > %s
                       AND o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
                       AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
-                    GROUP BY o.patient_id, pa.city_village
+                    GROUP BY o.patient_id
                     ORDER BY first_visit_time;
                 """
                 cur.execute(query, (last_sent_timestamp,))
@@ -677,13 +675,13 @@ def get_patients_by_location(last_sent_timestamp=None, full_refetch_window=None)
                         MIN(o.order_date) AS first_visit_time,
                         COUNT(*) AS visit_count,
                         tp.total AS total_patients_this_month,
-                        COALESCE(pa.city_village, 'Unknown') AS location
+                        COALESCE(MAX(pa.city_village), 'Unknown') AS location
                     FROM order_entries o
                     LEFT JOIN person_address pa ON pa.person_id = o.patient_id AND pa.voided = 0
                     CROSS JOIN total_patients tp
                     WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY)
                       AND o.order_date < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL DAYOFMONTH(CURDATE()) - 1 DAY), INTERVAL 1 MONTH)
-                    GROUP BY o.patient_id, pa.city_village
+                    GROUP BY o.patient_id
                     ORDER BY first_visit_time;
                 """
                 cur.execute(query)
