@@ -601,7 +601,11 @@ def get_refunded_patients(last_sent_timestamp=None):
                 cur.execute(query)
             
             rows = cur.fetchall()
-            #logger.info(f"Fetched {len(rows)} refund records (incremental: {last_sent_timestamp is not None})")
+            logger.info(
+                "Total refunds fetched=%s | last_sent_timestamp=%s",
+                len(rows),
+                last_sent_timestamp,
+            )
             return rows
     except Exception:
         get_fresh_connection().rollback()
@@ -787,6 +791,14 @@ def compose_payload():
     refunded_patients = get_refunded_patients(refund_last_sent) or []
     registered_patients = get_registered_patients(registered_last_sent) or []
 
+    logger.info(
+        "Fetched totals | age_categories=%s | gender_counts=%s | location_counts=%s | refunded_patients=%s",
+        len(age_categories),
+        len(gender_counts),
+        len(location_counts),
+        len(refunded_patients),
+    )
+
     if full_refetch_window:
         verify_start, verify_end = full_refetch_window
     else:
@@ -877,6 +889,13 @@ def compose_payload():
         len(location_list),
         len(refund_list),
         len(registered_list),
+    )
+    logger.info(
+        "Payload included groups | age_categories=%s | gender_counts=%s | location_counts=%s | refunded_patients=%s",
+        len(age_list),
+        len(gender_list),
+        len(location_list),
+        len(refund_list),
     )
     
     # Return payload along with metadata for state tracking
