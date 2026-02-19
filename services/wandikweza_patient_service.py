@@ -820,7 +820,7 @@ def compose_payload():
         {
             "patient_id": item["patient_id"],
             "category": item["category"],
-            "total": 1,
+            "total": item["total"],
             "time_stamp": format_ts(item["time_stamp"])
         }
         for item in age_categories
