@@ -562,9 +562,9 @@ def compose_payload():
         {
             "patient_id": item["patient_id"],
             "location": item["location"],
-            "time_stamp": format_ts(item["time_stamp"]),
-            "count": 1,
-            "total": item["total"]
+            "time_stamp": format_ts(item.get("time_stamp") or item.get("first_visit_time")),
+            "count": item.get("count", item.get("visit_count", 1)),
+            "total": item.get("total", item.get("total_patients_this_month", 0))
         }
         for item in location_counts
     ]
@@ -711,6 +711,8 @@ def push_payload_to_virtual_server():
                         timestamp_field = 'refund_timestamp'
                     elif data_type == 'registered_patients':
                         timestamp_field = 'date_created'
+                    elif data_type == 'location_counts':
+                        timestamp_field = 'first_visit_time'
                     else:
                         timestamp_field = 'time_stamp'
                     
