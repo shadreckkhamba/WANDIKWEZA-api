@@ -198,14 +198,14 @@ def get_patient_categories(last_sent_timestamp=None):
 
                         SELECT
                             'Adolescents' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
                         AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created > %s
+                        AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
+                        AND o.order_date > %s
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -253,15 +253,15 @@ def get_patient_categories(last_sent_timestamp=None):
 
                         SELECT
                             'Adolescents' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
+                            o.patient_id AS patient_id,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN person per ON o.patient_id = per.person_id
+                        WHERE o.voided = 0
                         AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND TIMESTAMPDIFF(YEAR, per.birthdate, o.order_date) BETWEEN 10 AND 19
+                        AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -353,7 +353,7 @@ def get_patients_by_gender(last_sent_timestamp=None):
         logger.error("Error in get_patients_by_gender:\n" + traceback.format_exc())
         return None
     finally:
-        conn.close()
+        conn.close() 
 
 def get_refunded_patients(last_sent_timestamp=None):
     """Get refunded patients with incremental support"""
@@ -415,61 +415,39 @@ def get_refunded_patients(last_sent_timestamp=None):
         return None
 
 def get_patients_by_location(last_sent_timestamp=None):
-    """Get patients by location with incremental support - based on registrations, not visits"""
+    """Get patients by location - based on VISITS (order_entries)"""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
-            if last_sent_timestamp:
-                query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created > %s
-                    )
-                    SELECT
-                        p.patient_id,
-                        p.date_created AS time_stamp,
-                        1 AS count,
-                        tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
-                    CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created > %s
-                    ORDER BY p.date_created;
-                """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
-            else:
-                query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND p2.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    )
-                    SELECT
-                        p.patient_id,
-                        p.date_created AS time_stamp,
-                        1 AS count,
-                        tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
-                    CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    ORDER BY p.date_created;
-                """
-                cur.execute(query)
-            
+
+            query = """
+                WITH total_patients AS (
+                    SELECT COUNT(DISTINCT o.patient_id) AS total
+                    FROM order_entries o
+                    LEFT JOIN person_address pa2 
+                           ON pa2.person_id = o.patient_id AND pa2.voided = 0
+                    WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                      AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                )
+                SELECT
+                    o.patient_id,
+                    MIN(o.order_date) AS first_visit_time,
+                    COUNT(*) AS visit_count,
+                    tp.total AS total_patients_this_month,
+                    COALESCE(pa.city_village, 'Unknown') AS location
+                FROM order_entries o
+                LEFT JOIN person_address pa 
+                       ON pa.person_id = o.patient_id AND pa.voided = 0
+                CROSS JOIN total_patients tp
+                WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                  AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                GROUP BY o.patient_id, pa.city_village
+                ORDER BY first_visit_time;
+            """
+
+            cur.execute(query)
             rows = cur.fetchall()
-            #logger.info(f"Fetched {len(rows)} location records based on REGISTRATIONS (incremental: {last_sent_timestamp is not None})")
             return rows
+
     except Exception:
         get_fresh_connection().rollback()
         logger.error("Error in get_patients_by_location:\n" + traceback.format_exc())
