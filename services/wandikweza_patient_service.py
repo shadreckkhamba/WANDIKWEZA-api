@@ -247,6 +247,7 @@ def get_order_entries_counts(window_start, window_end):
     except Exception:
         logger.error("Error in get_order_entries_counts:\n" + traceback.format_exc())
         return 0, 0
+    
 # --- data query function ---
 def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
     """Get patient categories with incremental support or a forced full-window fetch."""
@@ -260,7 +261,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                         SELECT
                             'Under 5' AS category,
                             per.person_id AS patient_id,
-                            NULL AS time_stamp
+                            per.date_created AS time_stamp
                         FROM person per
                         WHERE per.voided = 0
                           AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
@@ -309,21 +310,21 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                     ORDER BY d.category, d.time_stamp;
                 """
                 cur.execute(
-                    query,
                     (
                         window_start, window_end,  # Under 5
                         window_start, window_end,  # Pregnant Women
                         window_start, window_end   # Adolescents
-                    ),
+                    )
                 )
+
             elif last_sent_timestamp:
-                # Under 5 registrations in current month
                 query = """
                     WITH detailed_data AS (
+                        -- Under 5: registrations in current month
                         SELECT
                             'Under 5' AS category,
                             per.person_id AS patient_id,
-                            NULL AS time_stamp
+                            per.date_created AS time_stamp
                         FROM person per
                         WHERE per.voided = 0
                           AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
@@ -332,6 +333,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
 
                         UNION ALL
 
+                        -- Pregnant Women: only visits
                         SELECT
                             'Pregnant Women' AS category,
                             p.patient_id AS patient_id,
@@ -348,6 +350,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
 
                         UNION ALL
 
+                        -- Adolescents: only visits
                         SELECT
                             'Adolescents' AS category,
                             o.patient_id AS patient_id,
@@ -372,14 +375,15 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
                     ORDER BY d.category, d.time_stamp;
                 """
                 cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
+
             else:
-                # Default: current month
                 query = """
                     WITH detailed_data AS (
+                        -- Under 5: registrations in current month
                         SELECT
                             'Under 5' AS category,
                             per.person_id AS patient_id,
-                            NULL AS time_stamp
+                            per.date_created AS time_stamp
                         FROM person per
                         WHERE per.voided = 0
                           AND TIMESTAMPDIFF(YEAR, per.birthdate, CURDATE()) < 5
@@ -388,6 +392,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
 
                         UNION ALL
 
+                        -- Pregnant Women: only visits
                         SELECT
                             'Pregnant Women' AS category,
                             p.patient_id AS patient_id,
@@ -403,6 +408,7 @@ def get_patient_categories(last_sent_timestamp=None, full_refetch_window=None):
 
                         UNION ALL
 
+                        -- Adolescents: only visits
                         SELECT
                             'Adolescents' AS category,
                             o.patient_id AS patient_id,
