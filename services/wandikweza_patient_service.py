@@ -611,6 +611,7 @@ def get_refunded_patients(last_sent_timestamp=None):
                 last_sent_timestamp,
             )
             return rows
+
     except Exception:
         get_fresh_connection().rollback()
         logger.error("Error in get_refunded_patients:\n" + traceback.format_exc())
