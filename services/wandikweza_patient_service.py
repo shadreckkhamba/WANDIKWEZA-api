@@ -6,7 +6,7 @@ import os
 import time
 import threading
 from datetime import date
-from extensions.extensions import logger
+from extensions.extensions import logger, resolve_config_path
 from pymysql.cursors import DictCursor
 from datetime import datetime
 import pytz
@@ -20,11 +20,12 @@ import pymysql
 
 def get_fresh_connection():
     """Get a fresh database connection using config file settings"""
-    config_file_path = os.getenv('CONFIG_FILE', 'config/dev_config.yaml')
+    config_file_path = os.getenv("CONFIG_FILE")
+    config_path = resolve_config_path(config_file_path)
     
     try:
-        with open(config_file_path, 'r') as f:
-            config = yaml.safe_load(f)
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f) or {}
         
         db_config = config.get('database')
         if not db_config:
@@ -45,10 +46,10 @@ def get_fresh_connection():
             cursorclass=DictCursor
         )
     except FileNotFoundError:
-        logger.error(f"Config file not found: {config_file_path}")
-        raise Exception(f"Database config file not found: {config_file_path}")
+        logger.error(f"Config file not found: {config_path}")
+        raise Exception(f"Database config file not found: {config_path}")
     except Exception as e:
-        logger.error(f"Failed to load database config from {config_file_path}: {e}")
+        logger.error(f"Failed to load database config from {config_path}: {e}")
         raise Exception(f"Database configuration error: {e}")
 
 # --- File-based state tracking functions for incremental push ---
@@ -557,53 +558,54 @@ def get_refunded_patients(last_sent_timestamp=None):
     """Get refunded patients with incremental support"""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
+
             if last_sent_timestamp:
+                # Incremental fetch
                 query = """
                     SELECT 
-                        r.patient_id,
-                        op.updated_at AS refund_timestamp,
+                        oe.patient_id,
+                        oe.updated_at AS refund_timestamp,
                         1 AS count,
-                        (
-                            SELECT COUNT(DISTINCT r2.patient_id)
-                            FROM order_payments op2
-                            JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
-                            WHERE op2.voided = 1
-                              AND op2.updated_at IS NOT NULL
-                              AND op2.updated_at > %s
-                        ) AS total
-                    FROM order_payments op
-                    JOIN receipts r ON op.receipt_number = r.receipt_number
-                    WHERE op.voided = 1
-                      AND op.updated_at IS NOT NULL
-                      AND op.updated_at > %s
-                    ORDER BY op.updated_at;
+                        total.total_count AS total
+                    FROM order_entries oe
+                    JOIN (
+                        SELECT COUNT(DISTINCT patient_id) AS total_count
+                        FROM order_entries
+                        WHERE voided = 1
+                          AND voided_reason = 'Refund'
+                          AND updated_at > %s
+                    ) total ON 1=1
+                    WHERE oe.voided = 1
+                      AND oe.voided_reason = 'Refund'
+                      AND oe.updated_at > %s
+                    ORDER BY oe.updated_at;
                 """
                 cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
             else:
+                # Full month fetch
                 query = """
                     SELECT 
-                        r.patient_id,
-                        op.updated_at AS refund_timestamp,
+                        oe.patient_id,
+                        oe.updated_at AS refund_timestamp,
                         1 AS count,
-                        (
-                            SELECT COUNT(DISTINCT r2.patient_id)
-                            FROM order_payments op2
-                            JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
-                            WHERE op2.voided = 1
-                              AND op2.updated_at IS NOT NULL
-                              AND op2.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                              AND op2.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                        ) AS total
-                    FROM order_payments op
-                    JOIN receipts r ON op.receipt_number = r.receipt_number
-                    WHERE op.voided = 1
-                      AND op.updated_at IS NOT NULL
-                      AND op.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND op.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    ORDER BY op.updated_at;
+                        total.total_count AS total
+                    FROM order_entries oe
+                    JOIN (
+                        SELECT COUNT(DISTINCT patient_id) AS total_count
+                        FROM order_entries
+                        WHERE voided = 1
+                        AND voided_reason = 'Refund'
+                        AND updated_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                        AND updated_at < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                    ) total ON 1=1
+                    WHERE oe.voided = 1
+                    AND oe.voided_reason = 'Refund'
+                    AND oe.updated_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                    AND oe.updated_at < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                    ORDER BY oe.updated_at;
                 """
                 cur.execute(query)
-            
+
             rows = cur.fetchall()
             logger.info(
                 "Total refunds fetched=%s | last_sent_timestamp=%s",
