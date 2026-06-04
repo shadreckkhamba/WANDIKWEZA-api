@@ -5,7 +5,7 @@ from services.wandikweza_patient_service import push_payload_to_virtual_server
 
 app = create_app()
 
-if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # only start thread once
+if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
     def run_payload_loop():
         print("Starting payload push thread...")
         push_payload_to_virtual_server()
