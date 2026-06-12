@@ -5,7 +5,7 @@ from typing import Any
 import yaml
 
 
-DEFAULT_CONFIG_FILE = "config/dev_config.yaml"
+DEFAULT_CONFIG_FILE = "config/dev_config.yml"
 
 
 def _expand_env_vars(value: Any) -> Any:

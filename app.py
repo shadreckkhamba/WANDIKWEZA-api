@@ -14,7 +14,7 @@ def create_app():
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
     # Load config safely
-    config_file = os.getenv("CONFIG_FILE", "config/dev_config.yaml")
+    config_file = os.getenv("CONFIG_FILE", "config/dev_config.yml")
     full_config = load_config(config_file)
 
     app_config = full_config.get("app", {})

@@ -665,7 +665,8 @@ def compose_payload():
     ]
     visit_list = [
         {
-            "patient_id": v["edim_patient_id"],
+            "patient_id": v["identifier"],
+            "edim_patient_id": v["edim_patient_id"],
             "arrival_time": format_ts(v["arrival_time"]),
             "departure_time": format_ts(v["departure_time"]) if v["departure_time"] else None,
             "visit_date": format_ts(v["visit_date"]),
