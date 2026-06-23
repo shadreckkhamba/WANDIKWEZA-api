@@ -50,11 +50,11 @@ def get_fresh_connection(db_key='billing_import'):
         )
 
     except FileNotFoundError:
-        config_file_path = os.getenv('CONFIG_FILE', 'config/dev_config.yaml')
+        config_file_path = os.getenv('CONFIG_FILE', 'config/dev_config.yml')
         logger.error(f"Config file not found: {config_file_path}")
         raise Exception(f"Database config file not found: {config_file_path}")
     except Exception as e:
-        config_file_path = os.getenv('CONFIG_FILE', 'config/dev_config.yaml')
+        config_file_path = os.getenv('CONFIG_FILE', 'config/dev_config.yml')
         logger.error(f"Failed to load database config for '{db_key}' from {config_file_path}: {e}")
         raise Exception(f"Database configuration error for '{db_key}': {e}")
 
@@ -168,6 +168,11 @@ def get_max_timestamp_from_records(records, timestamp_field='time_stamp'):
     return max_timestamp
 
 local_tz = pytz.timezone('Africa/Blantyre')
+
+# Use safe month boundaries that work across year-end transitions.
+CURRENT_MONTH_START_SQL = "DATE_FORMAT(CURDATE(), '%%Y-%%m-01')"
+NEXT_MONTH_START_SQL = f"DATE_ADD({CURRENT_MONTH_START_SQL}, INTERVAL 1 MONTH)"
+
 # --- data query function ---
 def get_patient_categories(last_sent_timestamp=None):
     """Get patient categories with incremental support"""
@@ -175,8 +180,8 @@ def get_patient_categories(last_sent_timestamp=None):
         with get_fresh_connection().cursor() as cur:
             if last_sent_timestamp:
                 # Incremental query - only get records after last sent timestamp
-                query = """
-                    WITH detailed_data AS (
+                query = f"""
+                    WITH month_scope AS (
                         SELECT
                             'Under 5' AS category,
                             p.patient_id AS patient_id,
@@ -186,7 +191,8 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE p.voided = 0
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created > %s
+                        AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                        AND p.date_created < {NEXT_MONTH_START_SQL}
 
                         UNION ALL
 
@@ -200,7 +206,8 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE o.voided = 0
                         AND p.voided = 0
                         AND s.name = 'Female antenatal'
-                        AND o.order_date > %s
+                        AND o.order_date >= {CURRENT_MONTH_START_SQL}
+                        AND o.order_date < {NEXT_MONTH_START_SQL}
 
                         UNION ALL
 
@@ -213,11 +220,17 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE p.voided = 0
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created > %s
+                        AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                        AND p.date_created < {NEXT_MONTH_START_SQL}
+                    ),
+                    detailed_data AS (
+                        SELECT *
+                        FROM month_scope
+                        WHERE time_stamp > %s
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
-                        FROM detailed_data
+                        FROM month_scope
                         GROUP BY category
                     )
                     SELECT d.category, d.patient_id, d.time_stamp, t.total
@@ -225,10 +238,10 @@ def get_patient_categories(last_sent_timestamp=None):
                     JOIN totals t ON d.category = t.category
                     ORDER BY d.category, d.time_stamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp,))
             else:
                 # Full query - get all records from current month
-                query = """
+                query = f"""
                     WITH detailed_data AS (
                         SELECT
                             'Under 5' AS category,
@@ -239,8 +252,8 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE p.voided = 0
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                        AND p.date_created < {NEXT_MONTH_START_SQL}
 
                         UNION ALL
 
@@ -254,8 +267,8 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE o.voided = 0
                         AND p.voided = 0
                         AND s.name = 'Female antenatal'
-                        AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND o.order_date >= {CURRENT_MONTH_START_SQL}
+                        AND o.order_date < {NEXT_MONTH_START_SQL}
 
                         UNION ALL
 
@@ -268,8 +281,8 @@ def get_patient_categories(last_sent_timestamp=None):
                         WHERE p.voided = 0
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                        AND p.date_created < {NEXT_MONTH_START_SQL}
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -296,44 +309,60 @@ def get_patients_by_gender(last_sent_timestamp=None):
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
-                query = """
-                    SELECT
-                        p.patient_id,
-                        LOWER(per.gender) AS gender,
-                        p.date_created AS first_visit_this_month
-                    FROM patient p
-                    JOIN person per ON p.patient_id = per.person_id
-                    WHERE p.voided = 0
-                      AND per.voided = 0
-                      AND p.date_created > %s
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT
+                            p.patient_id,
+                            LOWER(per.gender) AS gender,
+                            p.date_created AS first_visit_this_month
+                        FROM patient p
+                        JOIN person per ON p.patient_id = per.person_id
+                        WHERE p.voided = 0
+                          AND per.voided = 0
+                          AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                          AND p.date_created < {NEXT_MONTH_START_SQL}
+                    ),
+                    totals AS (
+                        SELECT gender, COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
+                        GROUP BY gender
+                    )
+                    SELECT m.patient_id, m.gender, m.first_visit_this_month, t.total
+                    FROM month_scope m
+                    JOIN totals t ON m.gender = t.gender
+                    WHERE m.first_visit_this_month > %s
+                    ORDER BY m.first_visit_this_month;
                 """
                 cur.execute(query, (last_sent_timestamp,))
             else:
-                query = """
-                    SELECT
-                        p.patient_id,
-                        LOWER(per.gender) AS gender,
-                        p.date_created AS first_visit_this_month
-                    FROM patient p
-                    JOIN person per ON p.patient_id = per.person_id
-                    WHERE p.voided = 0
-                      AND per.voided = 0
-                      AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT
+                            p.patient_id,
+                            LOWER(per.gender) AS gender,
+                            p.date_created AS first_visit_this_month
+                        FROM patient p
+                        JOIN person per ON p.patient_id = per.person_id
+                        WHERE p.voided = 0
+                          AND per.voided = 0
+                          AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                          AND p.date_created < {NEXT_MONTH_START_SQL}
+                    ),
+                    totals AS (
+                        SELECT gender, COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
+                        GROUP BY gender
+                    )
+                    SELECT m.patient_id, m.gender, m.first_visit_this_month, t.total
+                    FROM month_scope m
+                    JOIN totals t ON m.gender = t.gender
+                    ORDER BY m.first_visit_this_month;
                 """
                 cur.execute(query)
             
             rows = cur.fetchall()
 
-            # Calculate gender totals
-            gender_totals = {}
             for row in rows:
-                gender = row['gender']
-                gender_totals[gender] = gender_totals.get(gender, 0) + 1
-
-            # Add total count per row
-            for row in rows:
-                row['total'] = gender_totals.get(row['gender'], 0)
                 row['time_stamp'] = row['first_visit_this_month']
 
             logger.info(f"Fetched {len(rows)} gender records based on REGISTRATIONS (incremental: {last_sent_timestamp is not None})")
@@ -348,49 +377,52 @@ def get_refunded_patients(last_sent_timestamp=None):
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
-                query = """
-                    SELECT 
-                        r.patient_id,
-                        op.updated_at AS refund_timestamp,
-                        1 AS count,
-                        (
-                            SELECT COUNT(DISTINCT r2.patient_id)
-                            FROM order_payments op2
-                            JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
-                            WHERE op2.voided = 1
-                              AND op2.updated_at IS NOT NULL
-                              AND op2.updated_at > %s
-                        ) AS total
-                    FROM order_payments op
-                    JOIN receipts r ON op.receipt_number = r.receipt_number
-                    WHERE op.voided = 1
-                      AND op.updated_at IS NOT NULL
-                      AND op.updated_at > %s
-                    ORDER BY op.updated_at;
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT 
+                            r.patient_id,
+                            op.updated_at AS refund_timestamp,
+                            1 AS count
+                        FROM order_payments op
+                        JOIN receipts r ON op.receipt_number = r.receipt_number
+                        WHERE op.voided = 1
+                          AND op.updated_at IS NOT NULL
+                          AND op.updated_at >= {CURRENT_MONTH_START_SQL}
+                          AND op.updated_at < {NEXT_MONTH_START_SQL}
+                    ),
+                    totals AS (
+                        SELECT COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
+                    )
+                    SELECT m.patient_id, m.refund_timestamp, m.count, t.total
+                    FROM month_scope m
+                    CROSS JOIN totals t
+                    WHERE m.refund_timestamp > %s
+                    ORDER BY m.refund_timestamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp,))
             else:
-                query = """
-                    SELECT 
-                        r.patient_id,
-                        op.updated_at AS refund_timestamp,
-                        1 AS count,
-                        (
-                            SELECT COUNT(DISTINCT r2.patient_id)
-                            FROM order_payments op2
-                            JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
-                            WHERE op2.voided = 1
-                              AND op2.updated_at IS NOT NULL
-                              AND op2.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                              AND op2.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                        ) AS total
-                    FROM order_payments op
-                    JOIN receipts r ON op.receipt_number = r.receipt_number
-                    WHERE op.voided = 1
-                      AND op.updated_at IS NOT NULL
-                      AND op.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND op.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    ORDER BY op.updated_at;
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT 
+                            r.patient_id,
+                            op.updated_at AS refund_timestamp,
+                            1 AS count
+                        FROM order_payments op
+                        JOIN receipts r ON op.receipt_number = r.receipt_number
+                        WHERE op.voided = 1
+                          AND op.updated_at IS NOT NULL
+                          AND op.updated_at >= {CURRENT_MONTH_START_SQL}
+                          AND op.updated_at < {NEXT_MONTH_START_SQL}
+                    ),
+                    totals AS (
+                        SELECT COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
+                    )
+                    SELECT m.patient_id, m.refund_timestamp, m.count, t.total
+                    FROM month_scope m
+                    CROSS JOIN totals t
+                    ORDER BY m.refund_timestamp;
                 """
                 cur.execute(query)
             
@@ -407,51 +439,60 @@ def get_patients_by_location(last_sent_timestamp=None):
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
-                query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created > %s
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT
+                            p.patient_id,
+                            p.date_created AS time_stamp,
+                            COALESCE(pa.city_village, 'Unknown') AS location
+                        FROM patient p
+                        LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        WHERE p.voided = 0
+                          AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                          AND p.date_created < {NEXT_MONTH_START_SQL}
+                    ),
+                    total_patients AS (
+                        SELECT COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
                     )
                     SELECT
                         p.patient_id,
-                        p.date_created AS time_stamp,
+                        p.time_stamp,
                         1 AS count,
                         tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        p.location
+                    FROM month_scope p
                     CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created > %s
-                    ORDER BY p.date_created;
+                    WHERE p.time_stamp > %s
+                    ORDER BY p.time_stamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp,))
             else:
-                query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND p2.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                query = f"""
+                    WITH month_scope AS (
+                        SELECT
+                            p.patient_id,
+                            p.date_created AS time_stamp,
+                            COALESCE(pa.city_village, 'Unknown') AS location
+                        FROM patient p
+                        LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        WHERE p.voided = 0
+                          AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                          AND p.date_created < {NEXT_MONTH_START_SQL}
+                    ),
+                    total_patients AS (
+                        SELECT COUNT(DISTINCT patient_id) AS total
+                        FROM month_scope
                     )
                     SELECT
                         p.patient_id,
-                        p.date_created AS time_stamp,
+                        p.time_stamp,
                         1 AS count,
                         tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        p.location
+                    FROM month_scope p
                     CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    ORDER BY p.date_created;
+                    ORDER BY p.time_stamp;
                 """
                 cur.execute(query)
             
@@ -470,7 +511,7 @@ def get_registered_patients(last_sent_timestamp=None):
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
                 # Incremental: get records after last sent timestamp, but still within current month
-                query = """
+                query = f"""
                     SELECT
                         p.patient_id,
                         pn.given_name,
@@ -485,14 +526,14 @@ def get_registered_patients(last_sent_timestamp=None):
                     AND per.voided = 0
                     AND pn.voided = 0
                     AND p.date_created > %s
-                    AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                    AND p.date_created < {NEXT_MONTH_START_SQL}
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query, (last_sent_timestamp,))
             else:
                 # Full: get all registrations from current month only
-                query = """
+                query = f"""
                     SELECT
                         p.patient_id,
                         pn.given_name,
@@ -506,8 +547,8 @@ def get_registered_patients(last_sent_timestamp=None):
                     WHERE p.voided = 0
                     AND per.voided = 0
                     AND pn.voided = 0
-                    AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created >= {CURRENT_MONTH_START_SQL}
+                    AND p.date_created < {NEXT_MONTH_START_SQL}
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query)
@@ -530,14 +571,14 @@ def get_patient_visits_current_month(last_sent_timestamp=None):
         # Connect to the 'edim' database
         with get_fresh_connection(db_key='edim').cursor(DictCursor) as cur:
             if last_sent_timestamp:
-                query = """
+                query = f"""
                     SELECT v.*
                     FROM edim_visits v
                     JOIN (
                         SELECT edim_patient_id, MAX(updated_at) AS latest_update
                         FROM edim_visits
-                        WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        WHERE arrival_time >= {CURRENT_MONTH_START_SQL}
+                          AND arrival_time < {NEXT_MONTH_START_SQL}
                           AND updated_at IS NOT NULL
                           AND updated_at > %s
                         GROUP BY edim_patient_id
@@ -548,14 +589,14 @@ def get_patient_visits_current_month(last_sent_timestamp=None):
                 """
                 cur.execute(query, (last_sent_timestamp,))
             else:
-                query = """
+                query = f"""
                     SELECT v.*
                     FROM edim_visits v
                     JOIN (
                         SELECT edim_patient_id, MAX(updated_at) AS latest_update
                         FROM edim_visits
-                        WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        WHERE arrival_time >= {CURRENT_MONTH_START_SQL}
+                          AND arrival_time < {NEXT_MONTH_START_SQL}
                           AND updated_at IS NOT NULL
                         GROUP BY edim_patient_id
                     ) lv
@@ -619,7 +660,7 @@ def compose_payload():
         {
             "patient_id": item["patient_id"],
             "category": item["category"],
-            "total": 1,
+            "total": item["total"],
             "time_stamp": format_ts(item["time_stamp"])
         }
         for item in age_categories
