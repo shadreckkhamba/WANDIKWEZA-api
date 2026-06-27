@@ -395,60 +395,71 @@ def get_refunded_patients(last_sent_timestamp=None):
         return None
 
 def get_patients_by_location(last_sent_timestamp=None):
-    """Get patients by location with incremental support - based on registrations, not visits"""
+    """Get patients by location with incremental support - based on visit orders."""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
                 query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created > %s
+                    WITH month_scope AS (
+                        SELECT
+                            o.patient_id,
+                            o.order_date AS time_stamp,
+                            COALESCE(pa.city_village, 'Unknown') AS location
+                        FROM order_entries o
+                        JOIN patient p ON o.patient_id = p.patient_id
+                        LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        WHERE o.voided = 0
+                          AND p.voided = 0
+                          AND o.order_date > %s
+                    ),
+                    total_patients AS (
+                        SELECT COUNT(*) AS total
+                        FROM month_scope
                     )
                     SELECT
-                        p.patient_id,
-                        p.date_created AS time_stamp,
+                        m.patient_id,
+                        m.time_stamp,
                         1 AS count,
                         tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        m.location
+                    FROM month_scope m
                     CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created > %s
-                    ORDER BY p.date_created;
+                    ORDER BY m.time_stamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp,))
             else:
                 query = """
-                    WITH total_patients AS (
-                        SELECT COUNT(DISTINCT p2.patient_id) AS total
-                        FROM patient p2
-                        LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
-                        WHERE p2.voided = 0
-                          AND p2.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND p2.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    WITH month_scope AS (
+                        SELECT
+                            o.patient_id,
+                            o.order_date AS time_stamp,
+                            COALESCE(pa.city_village, 'Unknown') AS location
+                        FROM order_entries o
+                        JOIN patient p ON o.patient_id = p.patient_id
+                        LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        WHERE o.voided = 0
+                          AND p.voided = 0
+                          AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    ),
+                    total_patients AS (
+                        SELECT COUNT(*) AS total
+                        FROM month_scope
                     )
                     SELECT
-                        p.patient_id,
-                        p.date_created AS time_stamp,
+                        m.patient_id,
+                        m.time_stamp,
                         1 AS count,
                         tp.total,
-                        COALESCE(pa.city_village, 'Unknown') AS location
-                    FROM patient p
-                    LEFT JOIN person_address pa ON pa.person_id = p.patient_id AND pa.voided = 0
+                        m.location
+                    FROM month_scope m
                     CROSS JOIN total_patients tp
-                    WHERE p.voided = 0
-                      AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                    ORDER BY p.date_created;
+                    ORDER BY m.time_stamp;
                 """
                 cur.execute(query)
             
             rows = cur.fetchall()
-            logger.info(f"Fetched {len(rows)} location records based on REGISTRATIONS (incremental: {last_sent_timestamp is not None})")
+            logger.info(f"Fetched {len(rows)} location records based on ORDER ENTRIES (incremental: {last_sent_timestamp is not None})")
             return rows
     except Exception:
         get_fresh_connection().rollback()
