@@ -276,51 +276,59 @@ def get_patient_categories(last_sent_timestamp=None):
         return None
 
 def get_patients_by_gender(last_sent_timestamp=None):
-    """Get patients by gender with incremental support - based on registrations, not visits"""
+    """Get patients by gender with incremental support - based on visit orders."""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
                 query = """
-                    SELECT
-                        p.patient_id,
-                        LOWER(per.gender) AS gender,
-                        p.date_created AS first_visit_this_month
-                    FROM patient p
-                    JOIN person per ON p.patient_id = per.person_id
-                    WHERE p.voided = 0
-                      AND per.voided = 0
-                      AND p.date_created > %s
+                    WITH month_scope AS (
+                        SELECT
+                            o.patient_id,
+                            UPPER(per.gender) AS gender,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN patient p ON o.patient_id = p.patient_id
+                        JOIN person per ON p.patient_id = per.person_id
+                        WHERE o.order_date > %s
+                    ),
+                    totals AS (
+                        SELECT gender, COUNT(*) AS total
+                        FROM month_scope
+                        GROUP BY gender
+                    )
+                    SELECT m.patient_id, m.gender, m.time_stamp, t.total
+                    FROM month_scope m
+                    JOIN totals t ON m.gender = t.gender
+                    ORDER BY m.time_stamp;
                 """
                 cur.execute(query, (last_sent_timestamp,))
             else:
                 query = """
-                    SELECT
-                        p.patient_id,
-                        LOWER(per.gender) AS gender,
-                        p.date_created AS first_visit_this_month
-                    FROM patient p
-                    JOIN person per ON p.patient_id = per.person_id
-                    WHERE p.voided = 0
-                      AND per.voided = 0
-                      AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    WITH month_scope AS (
+                        SELECT
+                            o.patient_id,
+                            UPPER(per.gender) AS gender,
+                            o.order_date AS time_stamp
+                        FROM order_entries o
+                        JOIN patient p ON o.patient_id = p.patient_id
+                        JOIN person per ON p.patient_id = per.person_id
+                        WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    ),
+                    totals AS (
+                        SELECT gender, COUNT(*) AS total
+                        FROM month_scope
+                        GROUP BY gender
+                    )
+                    SELECT m.patient_id, m.gender, m.time_stamp, t.total
+                    FROM month_scope m
+                    JOIN totals t ON m.gender = t.gender
+                    ORDER BY m.time_stamp;
                 """
                 cur.execute(query)
             
             rows = cur.fetchall()
-
-            # Calculate gender totals
-            gender_totals = {}
-            for row in rows:
-                gender = row['gender']
-                gender_totals[gender] = gender_totals.get(gender, 0) + 1
-
-            # Add total count per row
-            for row in rows:
-                row['total'] = gender_totals.get(row['gender'], 0)
-                row['time_stamp'] = row['first_visit_this_month']
-
-            logger.info(f"Fetched {len(rows)} gender records based on REGISTRATIONS (incremental: {last_sent_timestamp is not None})")
+            logger.info(f"Fetched {len(rows)} gender records based on ORDER ENTRIES (incremental: {last_sent_timestamp is not None})")
             return rows
 
     except Exception:
