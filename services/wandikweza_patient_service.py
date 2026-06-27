@@ -172,112 +172,96 @@ local_tz = pytz.timezone('Africa/Blantyre')
 def get_patient_categories(last_sent_timestamp=None):
     """Get patient categories with incremental support"""
     try:
-        with get_fresh_connection().cursor() as cur:
+        with get_fresh_connection().cursor(DictCursor) as cur:
             if last_sent_timestamp:
-                # Incremental query - only get records after last sent timestamp
                 query = """
-                    WITH detailed_data AS (
+                    WITH month_scope AS (
                         SELECT
-                            'Under 5' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created > %s
-
-                        UNION ALL
-
-                        SELECT
-                            'Pregnant Women' AS category,
-                            p.patient_id AS patient_id,
-                            o.order_date AS time_stamp
+                            o.patient_id,
+                            o.order_date AS time_stamp,
+                            s.name AS service_name,
+                            per.birthdate
                         FROM order_entries o
                         JOIN patient p ON o.patient_id = p.patient_id
+                        JOIN person per ON p.patient_id = per.person_id
                         JOIN services s ON o.service_id = s.service_id
                         WHERE o.voided = 0
-                        AND p.voided = 0
-                        AND s.name = 'Female antenatal'
-                        AND o.order_date > %s
-
-                        UNION ALL
-
+                          AND p.voided = 0
+                          AND per.voided = 0
+                          AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    ),
+                    detailed_data AS (
                         SELECT
-                            'Adolescents' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created > %s
+                            CASE
+                                WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) < 5 THEN 'Under 5'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 19 THEN 'Adolescents'
+                                ELSE NULL
+                            END AS category,
+                            patient_id,
+                            time_stamp
+                        FROM month_scope
+                        WHERE time_stamp > %s
+                    ),
+                    filtered_data AS (
+                        SELECT *
+                        FROM detailed_data
+                        WHERE category IS NOT NULL
                     ),
                     totals AS (
-                        SELECT category, COUNT(DISTINCT patient_id) AS total
-                        FROM detailed_data
+                        SELECT category, COUNT(*) AS total
+                        FROM filtered_data
                         GROUP BY category
                     )
                     SELECT d.category, d.patient_id, d.time_stamp, t.total
-                    FROM detailed_data d
+                    FROM filtered_data d
                     JOIN totals t ON d.category = t.category
                     ORDER BY d.category, d.time_stamp;
                 """
-                cur.execute(query, (last_sent_timestamp, last_sent_timestamp, last_sent_timestamp))
+                cur.execute(query, (last_sent_timestamp,))
             else:
-                # Full query - get all records from current month
                 query = """
-                    WITH detailed_data AS (
+                    WITH month_scope AS (
                         SELECT
-                            'Under 5' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-
-                        UNION ALL
-
-                        SELECT
-                            'Pregnant Women' AS category,
-                            p.patient_id AS patient_id,
-                            o.order_date AS time_stamp
+                            o.patient_id,
+                            o.order_date AS time_stamp,
+                            s.name AS service_name,
+                            per.birthdate
                         FROM order_entries o
                         JOIN patient p ON o.patient_id = p.patient_id
+                        JOIN person per ON p.patient_id = per.person_id
                         JOIN services s ON o.service_id = s.service_id
                         WHERE o.voided = 0
-                        AND p.voided = 0
-                        AND s.name = 'Female antenatal'
-                        AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-
-                        UNION ALL
-
+                          AND p.voided = 0
+                          AND per.voided = 0
+                          AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    ),
+                    detailed_data AS (
                         SELECT
-                            'Adolescents' AS category,
-                            p.patient_id AS patient_id,
-                            p.date_created AS time_stamp
-                        FROM patient p
-                        JOIN person per ON p.patient_id = per.person_id
-                        WHERE p.voided = 0
-                        AND per.voided = 0
-                        AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
-                        AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                            CASE
+                                WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) < 5 THEN 'Under 5'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 19 THEN 'Adolescents'
+                                ELSE NULL
+                            END AS category,
+                            patient_id,
+                            time_stamp
+                        FROM month_scope
+                    ),
+                    filtered_data AS (
+                        SELECT *
+                        FROM detailed_data
+                        WHERE category IS NOT NULL
                     ),
                     totals AS (
-                        SELECT category, COUNT(DISTINCT patient_id) AS total
-                        FROM detailed_data
+                        SELECT category, COUNT(*) AS total
+                        FROM filtered_data
                         GROUP BY category
                     )
                     SELECT d.category, d.patient_id, d.time_stamp, t.total
-                    FROM detailed_data d
+                    FROM filtered_data d
                     JOIN totals t ON d.category = t.category
                     ORDER BY d.category, d.time_stamp;
                 """
