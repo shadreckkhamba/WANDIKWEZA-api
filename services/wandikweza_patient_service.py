@@ -346,7 +346,7 @@ def get_refunded_patients(last_sent_timestamp=None):
                         op.updated_at AS refund_timestamp,
                         1 AS count,
                         (
-                            SELECT COUNT(DISTINCT r2.patient_id)
+                            SELECT COUNT(*)
                             FROM order_payments op2
                             JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
                             WHERE op2.voided = 1
@@ -368,7 +368,7 @@ def get_refunded_patients(last_sent_timestamp=None):
                         op.updated_at AS refund_timestamp,
                         1 AS count,
                         (
-                            SELECT COUNT(DISTINCT r2.patient_id)
+                            SELECT COUNT(*)
                             FROM order_payments op2
                             JOIN receipts r2 ON op2.receipt_number = r2.receipt_number
                             WHERE op2.voided = 1
