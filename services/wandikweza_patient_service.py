@@ -525,46 +525,31 @@ def get_registered_patients(last_sent_timestamp=None):
     
 def get_patient_visits_current_month(last_sent_timestamp=None):
     """
-    Latest updated visit per patient, current month.
+    Return EDIM visit rows for the current month.
     Uses updated_at for incremental detection so departure_time updates are pushed.
-    Now includes ACTIVE patients (those without departure_time yet).
     """
     try:
         # Connect to the 'edim' database
         with get_fresh_connection(db_key='edim').cursor(DictCursor) as cur:
             if last_sent_timestamp:
                 query = """
-                    SELECT v.*
-                    FROM edim_visits v
-                    JOIN (
-                        SELECT edim_patient_id, MAX(updated_at) AS latest_update
-                        FROM edim_visits
-                        WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                          AND updated_at IS NOT NULL
-                          AND updated_at > %s
-                        GROUP BY edim_patient_id
-                    ) lv
-                      ON v.edim_patient_id = lv.edim_patient_id
-                     AND v.updated_at = lv.latest_update
-                    ORDER BY v.updated_at;
+                    SELECT *
+                    FROM edim_visits
+                    WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                      AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND updated_at IS NOT NULL
+                      AND updated_at > %s
+                    ORDER BY updated_at;
                 """
                 cur.execute(query, (last_sent_timestamp,))
             else:
                 query = """
-                    SELECT v.*
-                    FROM edim_visits v
-                    JOIN (
-                        SELECT edim_patient_id, MAX(updated_at) AS latest_update
-                        FROM edim_visits
-                        WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
-                          AND updated_at IS NOT NULL
-                        GROUP BY edim_patient_id
-                    ) lv
-                      ON v.edim_patient_id = lv.edim_patient_id
-                     AND v.updated_at = lv.latest_update
-                    ORDER BY v.updated_at;
+                    SELECT *
+                    FROM edim_visits
+                    WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+                      AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND updated_at IS NOT NULL
+                    ORDER BY updated_at;
                 """
                 cur.execute(query)
 
