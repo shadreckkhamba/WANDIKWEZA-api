@@ -197,7 +197,12 @@ def get_patient_categories(last_sent_timestamp=None):
                         UNION ALL
 
                         SELECT
-                            'Adolescents' AS category,
+                            CASE
+                                WHEN TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 14
+                                    THEN 'Early Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 15 AND 19
+                                    THEN 'Late Adolescents'
+                            END AS category,
                             p.patient_id AS patient_id,
                             p.date_created AS time_stamp
                         FROM patient p
@@ -252,7 +257,12 @@ def get_patient_categories(last_sent_timestamp=None):
                         UNION ALL
 
                         SELECT
-                            'Adolescents' AS category,
+                            CASE
+                                WHEN TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 14
+                                    THEN 'Early Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 15 AND 19
+                                    THEN 'Late Adolescents'
+                            END AS category,
                             p.patient_id AS patient_id,
                             p.date_created AS time_stamp
                         FROM patient p
