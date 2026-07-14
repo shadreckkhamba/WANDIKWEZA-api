@@ -1,0 +1,8 @@
+{
+  "age_categories": {"last_sent_timestamp": null, "updated_at": null},
+  "gender_counts": {"last_sent_timestamp": null, "updated_at": null},
+  "location_counts": {"last_sent_timestamp": null, "updated_at": null},
+  "refunded_patients": {"last_sent_timestamp": null, "updated_at": null},
+  "registered_patients": {"last_sent_timestamp": null, "updated_at": null},
+  "patient_visits": {"last_sent_timestamp": null, "updated_at": null}
+}
