@@ -1,5 +1,7 @@
 import traceback
-from flask import jsonify, Blueprint
+import gzip
+import json
+from flask import jsonify, Blueprint, request
 from extensions.extensions import logger
 from datetime import datetime
 import pytz
@@ -8,8 +10,8 @@ from services.wandikweza_patient_service import (
     get_patients_by_gender,
     get_patients_by_location,
     get_refunded_patients,
-    get_refunded_patients,
-    get_registered_patients
+    get_registered_patients,
+    save_patient_payload
 )
 
 wandikweza_bp = Blueprint('wandikweza', __name__)
@@ -31,7 +33,7 @@ def get_patient_demographics():
         refunded_patients = get_refunded_patients()
         registered_patients = get_registered_patients()
 
-        if None in (age_categories, gender_counts, location_counts, refunded_patients):
+        if None in (age_categories, gender_counts, location_counts, refunded_patients, registered_patients):
             raise ValueError("One of the queries returned None")
 
         return jsonify({
@@ -42,5 +44,23 @@ def get_patient_demographics():
             "registered_patients": registered_patients
         }), 200
     except Exception as e:
-        logger.error("Error in /get_patient_categories/:\n" + traceback.format_exc())
+        logger.error("Error in /get_patient_data/:\n" + traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@wandikweza_bp.route('/save_patient_data/', methods=['POST'])
+def save_patient_data():
+    try:
+        raw_body = request.get_data()
+        if request.headers.get('Content-Encoding', '').lower() == 'gzip':
+            raw_body = gzip.decompress(raw_body)
+
+        payload = json.loads(raw_body.decode('utf-8')) if raw_body else {}
+        saved_counts = save_patient_payload(payload)
+
+        return jsonify({
+            "message": "Patient data saved successfully",
+            "saved_counts": saved_counts
+        }), 200
+    except Exception as e:
+        logger.error("Error in /save_patient_data/:\n" + traceback.format_exc())
         return jsonify({"error": str(e)}), 500
