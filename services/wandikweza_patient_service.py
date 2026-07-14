@@ -189,7 +189,7 @@ def get_patient_categories(last_sent_timestamp=None):
                           AND p.voided = 0
                           AND per.voided = 0
                           AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ),
                     detailed_data AS (
                         SELECT
@@ -236,7 +236,7 @@ def get_patient_categories(last_sent_timestamp=None):
                           AND p.voided = 0
                           AND per.voided = 0
                           AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ),
                     detailed_data AS (
                         SELECT
@@ -313,7 +313,7 @@ def get_patients_by_gender(last_sent_timestamp=None):
                         JOIN patient p ON o.patient_id = p.patient_id
                         JOIN person per ON p.patient_id = per.person_id
                         WHERE o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ),
                     totals AS (
                         SELECT gender, COUNT(*) AS total
@@ -374,14 +374,14 @@ def get_refunded_patients(last_sent_timestamp=None):
                             WHERE op2.voided = 1
                               AND op2.updated_at IS NOT NULL
                               AND op2.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                              AND op2.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                              AND op2.updated_at < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                         ) AS total
                     FROM order_payments op
                     JOIN receipts r ON op.receipt_number = r.receipt_number
                     WHERE op.voided = 1
                       AND op.updated_at IS NOT NULL
                       AND op.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND op.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND op.updated_at < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY op.updated_at;
                 """
                 cur.execute(query)
@@ -440,7 +440,7 @@ def get_patients_by_location(last_sent_timestamp=None):
                         WHERE o.voided = 0
                           AND p.voided = 0
                           AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ),
                     total_patients AS (
                         SELECT COUNT(*) AS total
@@ -489,7 +489,7 @@ def get_registered_patients(last_sent_timestamp=None):
                     AND pn.voided = 0
                     AND p.date_created > %s
                     AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query, (last_sent_timestamp,))
@@ -510,7 +510,7 @@ def get_registered_patients(last_sent_timestamp=None):
                     AND per.voided = 0
                     AND pn.voided = 0
                     AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query)
@@ -536,7 +536,7 @@ def get_patient_visits_current_month(last_sent_timestamp=None):
                     SELECT *
                     FROM edim_visits
                     WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND arrival_time < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                       AND updated_at IS NOT NULL
                       AND updated_at > %s
                     ORDER BY updated_at;
@@ -547,7 +547,7 @@ def get_patient_visits_current_month(last_sent_timestamp=None):
                     SELECT *
                     FROM edim_visits
                     WHERE arrival_time >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND arrival_time < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND arrival_time < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                       AND updated_at IS NOT NULL
                     ORDER BY updated_at;
                 """
