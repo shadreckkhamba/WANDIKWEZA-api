@@ -51,6 +51,197 @@ def get_fresh_connection():
         logger.error(f"Failed to load database config from {config_file_path}: {e}")
         raise Exception(f"Database configuration error: {e}")
 
+def get_billing_connection():
+    """Get a fresh connection to the reporting database used by Superset."""
+    config_file_path = os.getenv('CONFIG_FILE', 'config/virtual_config.yaml')
+
+    try:
+        with open(config_file_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+
+        db_config = config.get('billing_import')
+        if not db_config:
+            db_config = (config.get('database') or {}).get('billing_import')
+        if not db_config:
+            raise ValueError("billing_import configuration not found")
+
+        return pymysql.connect(
+            host=db_config['host'],
+            user=db_config['username'],
+            password=db_config['password'],
+            database=db_config['database_name'],
+            port=db_config.get('port', 3306),
+            cursorclass=DictCursor,
+            autocommit=False
+        )
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {config_file_path}")
+        raise Exception(f"Billing database config file not found: {config_file_path}")
+    except Exception as e:
+        logger.error(f"Failed to load billing database config from {config_file_path}: {e}")
+        raise Exception(f"Billing database configuration error: {e}")
+
+def save_patient_payload(payload):
+    """Persist pushed patient data into reporting tables for Superset."""
+    conn = get_billing_connection()
+    now = datetime.now()
+
+    try:
+        with conn.cursor() as cur:
+            # NOTE: Column layouts below MUST match the tables Superset reads.
+            # These CREATE statements only run on a fresh reporting DB; existing
+            # tables are left untouched by CREATE TABLE IF NOT EXISTS.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS patient_age_categories (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    category VARCHAR(50) NOT NULL,
+                    time_stamp DATETIME NOT NULL,
+                    total INT NOT NULL DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_patient_age_entry (category, patient_id, time_stamp)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS patient_gender_counts (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    gender VARCHAR(10) NOT NULL,
+                    time_stamp DATETIME NOT NULL,
+                    total INT DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_gender_count (patient_id, gender, time_stamp)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS patient_location_counts (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    location VARCHAR(100) NOT NULL,
+                    time_stamp DATETIME NOT NULL,
+                    count INT NOT NULL DEFAULT 1,
+                    total INT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_patient_location (patient_id, location)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS patient_refund_count (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    refund_timestamp DATETIME NOT NULL,
+                    count INT NOT NULL DEFAULT 1,
+                    total INT NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_patient_refund (patient_id, refund_timestamp)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS registered_patients (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    given_name VARCHAR(100) NULL,
+                    family_name VARCHAR(100) NULL,
+                    date_created DATETIME NOT NULL,
+                    birthdate DATETIME NULL,
+                    gender VARCHAR(20) NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_registered_patient (patient_id, date_created)
+                )
+            """)
+
+            counts = {
+                'age_categories': 0,
+                'gender_counts': 0,
+                'location_counts': 0,
+                'refunded_patients': 0,
+                'registered_patients': 0
+            }
+
+            for item in payload.get('age_categories', []):
+                cur.execute("""
+                    INSERT INTO patient_age_categories
+                        (patient_id, category, time_stamp, total, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        total = VALUES(total), updated_at = VALUES(updated_at)
+                """, (
+                    item.get('patient_id'), item.get('category'), item.get('time_stamp'),
+                    item.get('total', 1), now, now
+                ))
+                counts['age_categories'] += 1
+
+            for item in payload.get('gender_counts', []):
+                cur.execute("""
+                    INSERT INTO patient_gender_counts
+                        (patient_id, gender, time_stamp, total, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        total = VALUES(total), updated_at = VALUES(updated_at)
+                """, (
+                    item.get('patient_id'), item.get('gender', 'unknown'), item.get('time_stamp'),
+                    item.get('total', 1), now, now
+                ))
+                counts['gender_counts'] += 1
+
+            for item in payload.get('location_counts', []):
+                cur.execute("""
+                    INSERT INTO patient_location_counts
+                        (patient_id, location, time_stamp, count, total, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        time_stamp = VALUES(time_stamp), count = VALUES(count),
+                        total = VALUES(total), updated_at = VALUES(updated_at)
+                """, (
+                    item.get('patient_id'), item.get('location', 'Unknown'), item.get('time_stamp'),
+                    item.get('count', 1), item.get('total', 1), now, now
+                ))
+                counts['location_counts'] += 1
+
+            for item in payload.get('refunded_patients', []):
+                cur.execute("""
+                    INSERT INTO patient_refund_count
+                        (patient_id, refund_timestamp, count, total, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        count = VALUES(count), total = VALUES(total), updated_at = VALUES(updated_at)
+                """, (
+                    item.get('patient_id'), item.get('time_stamp'),
+                    item.get('count', 1), item.get('total', 1), now, now
+                ))
+                counts['refunded_patients'] += 1
+
+            for item in payload.get('registered_patients', []):
+                cur.execute("""
+                    INSERT INTO registered_patients
+                        (patient_id, given_name, family_name, date_created, birthdate, gender, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        given_name = VALUES(given_name),
+                        family_name = VALUES(family_name),
+                        birthdate = VALUES(birthdate),
+                        gender = VALUES(gender),
+                        updated_at = VALUES(updated_at)
+                """, (
+                    item.get('patient_id'), item.get('given_name'), item.get('family_name'),
+                    item.get('date_created'), item.get('birthdate'), item.get('gender'), now, now
+                ))
+                counts['registered_patients'] += 1
+
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        logger.error("Error saving pushed patient payload:\n" + traceback.format_exc())
+        raise
+    finally:
+        conn.close()
+
 # --- File-based state tracking functions for incremental push ---
 STATE_FILE_PATH = 'push_state.json'
 
@@ -237,7 +428,7 @@ def get_patient_categories(last_sent_timestamp=None):
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) < 5
                         AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -252,7 +443,7 @@ def get_patient_categories(last_sent_timestamp=None):
                         AND p.voided = 0
                         AND s.name = 'Female antenatal'
                         AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND o.order_date < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
 
                         UNION ALL
 
@@ -271,7 +462,7 @@ def get_patient_categories(last_sent_timestamp=None):
                         AND per.voided = 0
                         AND TIMESTAMPDIFF(YEAR, per.birthdate, p.date_created) BETWEEN 10 AND 19
                         AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                        AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                        AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ),
                     totals AS (
                         SELECT category, COUNT(DISTINCT patient_id) AS total
@@ -331,8 +522,8 @@ def get_patients_by_gender(last_sent_timestamp=None):
                     WHERE o.voided = 0
                       AND p.voided = 0
                       AND per.voided = 0
-                      AND o.order_date >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                      AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'), INTERVAL 1 MONTH)
+                      AND o.order_date >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                      AND o.order_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
                     ORDER BY o.order_date;
                 """
                 cur.execute(query)
@@ -396,14 +587,14 @@ def get_refunded_patients(last_sent_timestamp=None):
                             WHERE op2.voided = 1
                               AND op2.updated_at IS NOT NULL
                               AND op2.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                              AND op2.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                              AND op2.updated_at < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                         ) AS total
                     FROM order_payments op
                     JOIN receipts r ON op.receipt_number = r.receipt_number
                     WHERE op.voided = 1
                       AND op.updated_at IS NOT NULL
                       AND op.updated_at >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND op.updated_at < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND op.updated_at < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY op.updated_at;
                 """
                 cur.execute(query)
@@ -451,7 +642,7 @@ def get_patients_by_location(last_sent_timestamp=None):
                         LEFT JOIN person_address pa2 ON pa2.person_id = p2.patient_id AND pa2.voided = 0
                         WHERE p2.voided = 0
                           AND p2.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND p2.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                          AND p2.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     )
                     SELECT
                         p.patient_id,
@@ -464,7 +655,7 @@ def get_patients_by_location(last_sent_timestamp=None):
                     CROSS JOIN total_patients tp
                     WHERE p.voided = 0
                       AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                      AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                      AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY p.date_created;
                 """
                 cur.execute(query)
@@ -500,7 +691,7 @@ def get_registered_patients(last_sent_timestamp=None):
                     AND pn.voided = 0
                     AND p.date_created > %s
                     AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query, (last_sent_timestamp,))
@@ -521,7 +712,7 @@ def get_registered_patients(last_sent_timestamp=None):
                     AND per.voided = 0
                     AND pn.voided = 0
                     AND p.date_created >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                    AND p.date_created < DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()) + 1, '-01'))
+                    AND p.date_created < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
                     ORDER BY p.date_created ASC;
                 """
                 cur.execute(query)
