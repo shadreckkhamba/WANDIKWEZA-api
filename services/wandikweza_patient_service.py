@@ -196,7 +196,8 @@ def get_patient_categories(last_sent_timestamp=None):
                             CASE
                                 WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
                                 WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) < 5 THEN 'Under 5'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 19 THEN 'Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 14 THEN 'Early Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 15 AND 19 THEN 'Late Adolescents'
                                 ELSE NULL
                             END AS category,
                             patient_id,
@@ -243,7 +244,8 @@ def get_patient_categories(last_sent_timestamp=None):
                             CASE
                                 WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
                                 WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) < 5 THEN 'Under 5'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 19 THEN 'Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 10 AND 14 THEN 'Early Adolescents'
+                                WHEN TIMESTAMPDIFF(YEAR, birthdate, time_stamp) BETWEEN 15 AND 19 THEN 'Late Adolescents'
                                 ELSE NULL
                             END AS category,
                             patient_id,
