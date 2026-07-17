@@ -6,6 +6,8 @@ __pycache__/
 config/*
 config
 /config
+# Runtime push-state cursor (not source; must not overwrite production cursors on deploy)
+push_state.json
 # C extensions
 *.so
 
