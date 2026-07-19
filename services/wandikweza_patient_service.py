@@ -168,105 +168,86 @@ def get_max_timestamp_from_records(records, timestamp_field='time_stamp'):
     return max_timestamp
 
 local_tz = pytz.timezone('Africa/Blantyre')
+
+
+def _current_month_bounds_sql():
+    """Return SQL expressions for the current month's start/end boundaries."""
+    month_start = "DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))"
+    month_end = f"({month_start} + INTERVAL 1 MONTH)"
+    return month_start, month_end
+
+
+def _patient_category_query(last_sent_timestamp=None):
+    """
+    Build the age-category query from current-month patients.
+
+    This keeps Under 5 patients visible even when they have no order entries,
+    while still allowing order-based Pregnant Women classification.
+    """
+    month_start, month_end = _current_month_bounds_sql()
+    incremental_filter = "WHERE time_stamp > %s" if last_sent_timestamp else ""
+
+    return f"""
+        WITH month_scope AS (
+            SELECT
+                p.patient_id,
+                COALESCE(MAX(o.order_date), p.date_created) AS time_stamp,
+                MAX(CASE WHEN s.name = 'Female antenatal' THEN 1 ELSE 0 END) AS has_female_antenatal,
+                per.birthdate
+            FROM patient p
+            JOIN person per ON p.patient_id = per.person_id
+            LEFT JOIN order_entries o ON o.patient_id = p.patient_id
+                AND o.voided = 0
+                AND o.order_date >= {month_start}
+                AND o.order_date < {month_end}
+            LEFT JOIN services s ON o.service_id = s.service_id
+            WHERE p.voided = 0
+              AND per.voided = 0
+              AND (
+                    (p.date_created >= {month_start} AND p.date_created < {month_end})
+                    OR o.order_date IS NOT NULL
+              )
+            GROUP BY p.patient_id, p.date_created, per.birthdate
+        ),
+        detailed_data AS (
+            SELECT
+                CASE
+                    WHEN has_female_antenatal = 1 THEN 'Pregnant Women'
+                    WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) < 5 THEN 'Under 5'
+                    WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 10 AND 14 THEN 'Early Adolescents'
+                    WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 15 AND 19 THEN 'Late Adolescents'
+                    ELSE NULL
+                END AS category,
+                patient_id,
+                time_stamp
+            FROM month_scope
+            {incremental_filter}
+        ),
+        filtered_data AS (
+            SELECT *
+            FROM detailed_data
+            WHERE category IS NOT NULL
+        ),
+        totals AS (
+            SELECT category, COUNT(*) AS total
+            FROM filtered_data
+            GROUP BY category
+        )
+        SELECT d.category, d.patient_id, d.time_stamp, t.total
+        FROM filtered_data d
+        JOIN totals t ON d.category = t.category
+        ORDER BY d.category, d.time_stamp;
+    """
+
 # --- data query function ---
 def get_patient_categories(last_sent_timestamp=None):
     """Get patient categories with incremental support"""
     try:
         with get_fresh_connection().cursor(DictCursor) as cur:
+            query = _patient_category_query(last_sent_timestamp)
             if last_sent_timestamp:
-                query = """
-                    WITH month_scope AS (
-                        SELECT
-                            o.patient_id,
-                            o.order_date AS time_stamp,
-                            s.name AS service_name,
-                            per.birthdate
-                        FROM order_entries o
-                        JOIN patient p ON o.patient_id = p.patient_id
-                        JOIN person per ON p.patient_id = per.person_id
-                        JOIN services s ON o.service_id = s.service_id
-                        WHERE o.voided = 0
-                          AND p.voided = 0
-                          AND per.voided = 0
-                          AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
-                    ),
-                    detailed_data AS (
-                        SELECT
-                            CASE
-                                WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) < 5 THEN 'Under 5'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 10 AND 14 THEN 'Early Adolescents'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 15 AND 19 THEN 'Late Adolescents'
-                                ELSE NULL
-                            END AS category,
-                            patient_id,
-                            time_stamp
-                        FROM month_scope
-                        WHERE time_stamp > %s
-                    ),
-                    filtered_data AS (
-                        SELECT *
-                        FROM detailed_data
-                        WHERE category IS NOT NULL
-                    ),
-                    totals AS (
-                        SELECT category, COUNT(*) AS total
-                        FROM filtered_data
-                        GROUP BY category
-                    )
-                    SELECT d.category, d.patient_id, d.time_stamp, t.total
-                    FROM filtered_data d
-                    JOIN totals t ON d.category = t.category
-                    ORDER BY d.category, d.time_stamp;
-                """
                 cur.execute(query, (last_sent_timestamp,))
             else:
-                query = """
-                    WITH month_scope AS (
-                        SELECT
-                            o.patient_id,
-                            o.order_date AS time_stamp,
-                            s.name AS service_name,
-                            per.birthdate
-                        FROM order_entries o
-                        JOIN patient p ON o.patient_id = p.patient_id
-                        JOIN person per ON p.patient_id = per.person_id
-                        JOIN services s ON o.service_id = s.service_id
-                        WHERE o.voided = 0
-                          AND p.voided = 0
-                          AND per.voided = 0
-                          AND o.order_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
-                          AND o.order_date < (DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')) + INTERVAL 1 MONTH)
-                    ),
-                    detailed_data AS (
-                        SELECT
-                            CASE
-                                WHEN service_name = 'Female antenatal' THEN 'Pregnant Women'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) < 5 THEN 'Under 5'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 10 AND 14 THEN 'Early Adolescents'
-                                WHEN TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN 15 AND 19 THEN 'Late Adolescents'
-                                ELSE NULL
-                            END AS category,
-                            patient_id,
-                            time_stamp
-                        FROM month_scope
-                    ),
-                    filtered_data AS (
-                        SELECT *
-                        FROM detailed_data
-                        WHERE category IS NOT NULL
-                    ),
-                    totals AS (
-                        SELECT category, COUNT(*) AS total
-                        FROM filtered_data
-                        GROUP BY category
-                    )
-                    SELECT d.category, d.patient_id, d.time_stamp, t.total
-                    FROM filtered_data d
-                    JOIN totals t ON d.category = t.category
-                    ORDER BY d.category, d.time_stamp;
-                """
                 cur.execute(query)
             
             rows = cur.fetchall()
